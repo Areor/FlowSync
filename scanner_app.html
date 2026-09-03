@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logistik Handheld Scanner Terminal</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        h2 { margin-top: 0; color: #1e3a8a; border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; }
+        .status-bar { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-radius: 8px; margin-bottom: 20px; font-weight: bold; }
+        .online { background: #d1fae5; color: #065f46; }
+        .offline { background: #fee2e2; color: #991b1b; }
+        .input-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 14px; }
+        input[type="text"] { width: 100%; padding: 12px; border: 2px solid #ced4da; border-radius: 8px; box-sizing: border-box; font-size: 16px; }
+        input[type="text"]:focus { border-color: #3b82f6; outline: none; }
+        button { width: 100%; background: #2563eb; color: white; border: none; padding: 12px; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background 0.2s; }
+        button:hover { background: #1d4ed8; }
+        .log-section { margin-top: 20px; background: #1e293b; color: #38bdf8; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto; }
+        .queue-badge { background: #3b82f6; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>📱 Scanner Terminal <span id="queueCount" class="queue-badge">Warteschlange: 0</span></h2>
+    
+    <!-- Transparente Status-Anzeige (Ausfallsicherheit) -->
+    <div id="statusBar" class="status-bar online">
+        <span id="statusText">● System: Live & Verbunden</span>
+    </div>
+
+    <div class="input-group">
+        <label for="barcodeInput">Barcode scannen (Lieferschein/Order-Nr):</label>
+        <!-- Wir simulieren den physikalischen Scan über die Tastatureingabe -->
+        <input type="text" id="barcodeInput" placeholder="Z.B. ORD-2026-9912" autocomplete="off">
+    </div>
+
+    <button id="scanBtn">Scan bestätigen (Enter)</button>
+
+    <h4 style="margin-bottom: 5px; margin-top: 25px;">Schnittstellen-Protokoll:</h4>
+    <div id="terminalLog" class="log-section">=== Terminal initialisiert ===</div>
+</div>
+
+<script>
+    const DEVICE_ID = "SCANNER_HALLE_01";
+    const API_URL = "http://localhost:8000/api/v1/warehouse/scans";
+    
+    let isOnline = true;
+    let offlineQueue = [];
+    let scanStartTime = null;
+
+    const statusBar = document.getElementById('statusBar');
+    const statusText = document.getElementById('statusText');
+    const barcodeInput = document.getElementById('barcodeInput');
+    const scanBtn = document.getElementById('scanBtn');
+    const terminalLog = document.getElementById('terminalLog');
+    const queueCount = document.getElementById('queueCount');
+
+    // ROI-Zeitmessung: Sobald der Nutzer anfängt zu tippen, startet die Uhr (T0)
+    barcodeInput.addEventListener('input', () => {
+        if (!scanStartTime) {
+            scanStartTime = performance.now();
+            logToTerminal("⏱️ ROI-Zeitmessung gestartet (Nutzer tippt)...");
+        }
+    });
+
+    // Event-Trigger für den Scan (Knopf oder Enter-Taste)
+    scanBtn.addEventListener('click', processScan);
+    barcodeInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') processScan();
+    });
+
+    function logToTerminal(message) {
+        const time = new Date().toLocaleTimeString();
+        terminalLog.innerHTML += `<br>[${time}] ${message}`;
+        terminalLog.scrollTop = terminalLog.scrollHeight;
+    }
+
+    // Erzeugt eine echte kryptografische UUIDv4 im Webbrowser
+    function generateUUID() {
+        return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+            (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+        );
+    }
+
+    function updateQueueUI() {
+        queueCount.innerText = `Warteschlange: ${offlineQueue.length}`;
+    }
+
+    async function processScan() {
+        const barcode = barcodeInput.value.trim();
+        if (!barcode) return;
+
+        // T1: Scan abgeschlossen & Verarbeitung gestartet
+        const scanEndTime = performance.now();
+        const durationSec = scanStartTime ? ((scanEndTime - scanStartTime) / 1000) : 0.5;
+        
+        // Zurücksetzen für den nächsten Scan
+        scanStartTime = null; 
+
+        // 1. COMPOSITE KEY GENERIEREN (DeviceID + Timestamp + UUID)
+        const timestamp = Date.now();
+        const uuid = generateUUID();
+        const compositeKey = `SC-${DEVICE_ID}-${timestamp}-${uuid}`;
+
+        const scanPayload = {
+            unique_scan_id: compositeKey,
+            device_id: DEVICE_ID,
+            timestamp: timestamp,
+            uuid: uuid,
+            barcode: barcode,
+            scan_duration_sec: parseFloat(durationSec.toFixed(2))
+        };
+
+        barcodeInput.value = ""; // Eingabefeld leeren
+        barcodeInput.focus();
+
+        // 2. SPEICHER-ENTSCHEIDUNG (Online vs. Offline-Append)
+        if (isOnline) {
+            logToTerminal(`🚀 Sende Live-Scan an Cloud API: ${barcode}...`);
+            const success = await sendToApi(scanPayload);
+            if (success) {
+                logToTerminal(`🟢 Cloud bestätigt: Datensatz gesichert. Latency: ${durationSec.toFixed(2)}s`);
+            } else {
+                goOffline(scanPayload);
+            }
+        } else {
+            goOffline(scanPayload);
+        }
+    }
+
+    function goOffline(payload) {
+        // APPEND-ONLY Logik für den lokalen Speicher (Keine Überschreibungen!)
+        offlineQueue.push(payload);
+        updateQueueUI();
+        logToTerminal(`📦 [OFFLINE SAVED] Netzwerk getrennt. Scan im Browser geparkt: ${payload.barcode}`);
+    }
+
+    async function sendToApi(payload) {
+        try {
+            const response = await fetch(API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            return response.ok;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    // NETZWERK-ÜBERWACHUNG (Heartbeat & Netzwerktester)
+    setInterval(async () => {
+        try {
+            // Versuche den FastAPI Server zu pingen
+            const response = await fetch("http://localhost:8000/api/v1/warehouse/transactions");
+            if (response.ok && !isOnline) {
+                // Netzwerk wurde wiederhergestellt!
+                isOnline = true;
+                statusBar.className = "status-bar online";
+                statusText.innerText = "● System: Live & Verbunden";
+                logToTerminal("⚡ Netzwerk wiederhergestellt! Starte automatische Synchronisation...");
+                await syncOfflineQueue();
+            } else if (response.ok) {
+                isOnline = true;
+            }
+        } catch (error) {
+            if (isOnline) {
+                isOnline = false;
+                statusBar.className = "status-bar offline";
+                statusText.innerText = "● System: OFFLINE-MODUS AKTIV";
+                logToTerminal("⚠️ Verbindung zum Cloud-Server verloren! Wechsel in Offline-Modus.");
+            }
+        }
+    }, 3000); // Testet alle 3 Sekunden die Verbindung
+
+    // STAU-VERMEIDUNGS-PROTOKOLL (Queue-Sync)
+    async function syncOfflineQueue() {
+        if (offlineQueue.length === 0) return;
+        logToTerminal(`🔄 Synchronisiere ${offlineQueue.length} geparkte Scans mit dem Server...`);
+
+        // Verarbeitet die Warteschlange von alt nach neu (FIFO-Prinzip)
+        while (offlineQueue.length > 0) {
+            const nextScan = offlineQueue[0];
+            const success = await sendToApi(nextScan);
+            
+            if (success) {
+                // Erst löschen, wenn der Server das "Acknowledge" (OK) gegeben hat!
+                offlineQueue.shift();
+                updateQueueUI();
+                logToTerminal(`✅ Offline-Scan erfolgreich übertragen: ${nextScan.barcode}`);
+            } else {
+                logToTerminal("❌ Synchronisation stockt. Warte auf stabiles Netz...");
+                break;
+            }
+        }
+    }
+</script>
+
+</body>
+</html>
