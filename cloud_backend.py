@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List
 from supabase import create_client, Client
 from postgrest.exceptions import APIError
+from datetime import datetime, timedelta, UTC
 import uvicorn
 
 app = FastAPI(title="Logistik SaaS Cloud API")
@@ -88,6 +89,40 @@ async def get_all_transactions():
         return response.data
     except APIError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database error: {e.message}")
+
+from fastapi.responses import PlainTextResponse
+from datetime import datetime, timedelta
+
+@app.get("/api/v1/warehouse/export-tms", response_class=PlainTextResponse)
+async def export_tms_batch():
+    """Generiert am Tagesende den konsolidierten CSV-Batch-Export für das Altsystem."""
+    try:
+        # Holt alle gesammelten Scans der letzten 24 Stunden aus Supabase
+        one_day_ago = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        response = supabase.table("scan_events")\
+                           .select("barcode, scan_type, created_at")\
+                           .gte("created_at", one_day_ago)\
+                           .execute()
+        
+        scans = response.data
+        
+        # CSV-Header definieren
+        csv_content = "auftrag_id;status;verarbeitet_am\n"
+        
+        # Datensätze in das vom Altsystem erwartete CSV-Format konvertieren
+        for scan in scans:
+            barcode = scan.get("barcode", "UNKNOWN")
+            status_value = scan.get("scan_type", "GELADEN")
+            timestamp = scan.get("created_at", "")
+            
+            csv_content += f"{barcode};{status_value};{timestamp}\n"
+            
+        print(f" 📑 [BATCH EXPORT] {len(scans)} Datensätze für den TMS-Export strukturiert.")
+        return csv_content
+
+    except APIError as e:
+        raise HTTPException(status_code=500, detail=f"Database export error: {e.message}")
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
