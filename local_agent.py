@@ -25,8 +25,14 @@ class LocalAgent:
         self.archive_folder = os.path.join(self.watch_folder, "archive")
         self.api_url = self.config.get("api_endpoint", "http://localhost:8000/api/v1/warehouse/scans")
         
+        # NEU: Konfiguration für den abendlichen Batch-Export (Standard: 18:00 Uhr)
+        self.export_target_dir = os.path.abspath(os.path.join(base_dir, "./tms_outbound"))
+        self.scheduled_export_time = self.config.get("export_time", "18:00")
+        self.last_export_date = "" # Verhindert, dass der Export innerhalb derselben Minute mehrfach triggert
+
         os.makedirs(self.watch_folder, exist_ok=True)
         os.makedirs(self.archive_folder, exist_ok=True)
+        os.makedirs(self.export_target_dir, exist_ok=True)
 
     def load_config(self) -> dict:
         if not os.path.exists(self.config_path):
@@ -34,7 +40,8 @@ class LocalAgent:
                 "watch_folder": "./watch_dir",
                 "api_endpoint": "http://localhost:8000/api/v1/warehouse/scans", 
                 "expected_columns": ["auftrag_id", "gewicht_kg", "status"],
-                "column_types": {"auftrag_id": "str", "gewicht_kg": "float", "status": "str"}
+                "column_types": {"auftrag_id": "str", "gewicht_kg": "float", "status": "str"},
+                "export_time": "18:00" # NEU: Standardzeit im Config-File hinterlegt
             }
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(default_config, f, indent=4)
@@ -87,7 +94,6 @@ class LocalAgent:
         if not lines:
             return [], []
         
-        # Flexibler Trennzeichen-Check
         delimiter = ";" if ";" in lines[0] else ","
         header = [col.strip().replace('"', '') for col in lines[0].split(delimiter)]
         
@@ -125,11 +131,9 @@ class LocalAgent:
         missing_columns = expected_set - incoming_set
         new_columns = incoming_set - expected_set
         
-        # 1. Fall: Alles stimmt perfekt überein -> Erfolg!
         if not missing_columns and not new_columns:
             return True
             
-        # 2. Fall: Genau eine Spalte verschoben/umbenannt -> Self-Healing prüfen
         if len(missing_columns) == 1 and len(new_columns) == 1:
             old_col = list(missing_columns)[0]
             new_col = list(new_columns)[0]
@@ -146,7 +150,6 @@ class LocalAgent:
                 self.save_config()
                 return True
                 
-        # 3. Fall: Unbekannter oder zu komplexer Strukturfehler
         return False
 
     def process_file(self, file_path: str):
@@ -165,17 +168,13 @@ class LocalAgent:
             
         header, rows = self.parse_csv_header_and_rows(file_path, encoding)
         
-        # Struktur- und Self-Healing-Validierung ausführen
         if not self.execute_self_healing(header, rows):
             print(f"[STOP] Strukturfehler. Erwartet: {self.config['expected_columns']}, Erhalten: {header}")
             return
             
-        # ======================================================================
-        # 🚀 ÜBERTRAGUNG AN DIE CLOUD-API (KORRIGIERT & SYNTAX-GESICHERT)
-        # ======================================================================
         success_count = 0
         agent_device_id = "LOCAL_AGENT_SERVER"
-        id_column = self.config["expected_columns"][0] # Holt exakt die erste Spalte ("auftrag_id")
+        id_column = self.config["expected_columns"][0]
         
         for row in rows:
             timestamp = int(time.time() * 1000)
@@ -213,10 +212,38 @@ class LocalAgent:
         except Exception as e:
             print(f"[ERROR] {e}")
 
+    # ==========================================================================
+    # 📥 NEU: DIE OUTBOUND BATCH-EXPORT ENGINE
+    # ==========================================================================
+    def download_daily_tms_export(self):
+        """Holt die bereinigte CSV aus der Cloud und legt sie im TMS-Importordner ab."""
+        # Generiert die korrekte Export-URL aus der Scans-API-URL
+        export_url = self.api_url.replace("/scans", "/export-tms")
+        
+        try:
+            print(f"\n[OUTBOUND] Getriggerter Datenabruf von der Cloud-API...")
+            response = requests.get(export_url, timeout=10)
+            
+            if response.status_code == 200:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                export_file_path = os.path.join(self.export_target_dir, f"TMS_RUECKSPIEL_{timestamp}.csv")
+                
+                with open(export_file_path, "w", encoding="utf-8") as f:
+                    f.write(response.text)
+                    
+                print(f" 💾 [OUTBOUND SUCCESS] Bereinigte CSV gesichert unter: {export_file_path}")
+            else:
+                print(f" ⚠️ [OUTBOUND WARN] Keine neuen Daten oder Serverfehler (Status: {response.status_code})")
+                
+        except requests.exceptions.RequestException as e:
+            print(f" ❌ [OUTBOUND ERROR] Download fehlgeschlagen: {e}")
+
     def run(self):
         print(f"\n=======================================================")
-        print(f"🚀 LOGISTIK-AGENT MIT API-ANBINDUNG AKTIV")
-        print(f"📂 ÜBERWACHTER ORDNER: {self.watch_folder}")
+        print(f"🚀 FLOWSYNC LOGISTIK-AGENT AKTIV")
+        print(f"📂 INBOUND ORDNER: {self.watch_folder}")
+        print(f"📥 OUTBOUND ORDNER: {self.export_target_dir}")
+        print(f"⏰ EXPORT-UHRZEIT: {self.scheduled_export_time} Uhr")
         print(f"🌐 ZIEL-API-SERVER: {self.api_url}")
         print(f"=======================================================\n")
         
@@ -225,11 +252,23 @@ class LocalAgent:
         
         try:
             while True:
+                # 1. Inbound-Prüfung: Scannt den Ordner aktiv für 5 Sekunden
                 for _ in range(10): 
-                    print(f"\r[{spinner[spinner_idx]}] Agent scannt Ordner aktiv... Drücke STRG+C", end="", flush=True)
+                    current_time_str = datetime.now().strftime("%H:%M")
+                    current_date_str = datetime.now().strftime("%Y-%m-%d")
+                    
+                    print(f"\r[{spinner[spinner_idx]}] Agent aktiv... Uhrzeit: {datetime.now().strftime('%H:%M:%S')} | Drücke STRG+C", end="", flush=True)
                     spinner_idx = (spinner_idx + 1) % len(spinner)
+                    
+                    # ⏰ NEU: Der Scheduler-Zeitschalter (Prüft im Sekundentakt auf Übereinstimmung)
+                    if current_time_str == self.scheduled_export_time and self.last_export_date != current_date_str:
+                        print(f"\n\n⏰ [SCHEDULER] Export-Uhrzeit ({self.scheduled_export_time}) erreicht!")
+                        self.download_daily_tms_export()
+                        self.last_export_date = current_date_str  # Verhindert Mehrfachaustragung in dieser Minute
+                        
                     time.sleep(0.5)
                 
+                # 2. Datei-Verarbeitung falls eine neue CSV eingeworfen wird
                 for item in os.listdir(self.watch_folder):
                     item_path = os.path.join(self.watch_folder, item)
                     if os.path.isfile(item_path) and item.lower().endswith('.csv'):
