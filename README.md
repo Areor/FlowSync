@@ -1,5 +1,5 @@
 # FlowSync
-A fault-tolerant, low-maintenance B2B logistics middleware bridging legacy ERP file dumps (CSV) and modern web execution terminals (PWA). Features an autonomous self-healing parser for schema mutations, a backend idempotency shield against data redundancy, and an offline-first FIFO synchronization queue.
+A fault-tolerant, low-maintenance B2B logistics middleware bridging legacy ERP file dumps (CSV) and modern web execution terminals (PWA). Features an autonomous self-healing parser for schema mutations, a database-backed idempotency shield against data redundancy, and an offline-first FIFO synchronization queue.
 
 # 🚀 FlowSync — Fault-Tolerant Logistics SaaS Middleware
 
@@ -21,12 +21,13 @@ The system architecture is strictly split into decoupled, stateless layers engin
 A lightweight background worker monitoring local ERP export directories.
 * **File Stability Validation (Debounce Matrix):** Traps the classic *file-locking* issue. When an ERP takes seconds to write a massive CSV, the agent samples byte-size metrics over a 2-second delay. Processing is safely blocked until file-size volatility hits zero.
 * **Autonomous Self-Healing Parser:** Employs a deterministic 1:1 set-difference algorithm to catch schema mutations on the fly. If an admin renames a column at runtime, the engine heals its internal `config.json` without executing a fatal runtime crash.
-* **False-Positive Shielding:** To block catastrophic structural assumptions, the self-healing algorithm runs a deep-scan heuristic check on cellular data types (e.g., confirming missing numeric structures aren't replaced by alphabetic strings) before committing a configuration patch.
-* **Watch-Folder Isolation (CPU Protection):** Successfully uploaded file bodies are physically moved to a local `/archive` matrix to prevent redundant SHA-256 content hashing loops that spike host CPU usage to 100%.
+* **Fuzzy-Matching & Levenshtein Distance:** Leverages mathematical string-distance heuristics to autonomously map slightly mutated column headers (e.g., typos or minor export shifts) without halting execution.
+* **Automated Outbound Scheduler:** Features an integrated, timezone-aware background clock that automatically triggers at a user-defined time (e.g., 18:00) to fetch cleaned batch reports from the cloud and inject them back into the legacy ERP directory.
 
 ### 2. Idempotent SaaS Backend API (`cloud_backend.py`)
-A rapid, asynchronous REST application layer powered by **FastAPI**.
-* **Network-Jitter Deduplication Wall:** Leverages a strict production-grade unique identity map. Handheld terminals retrying identical data packets due to Wi-Fi drops receive a standard `200 OK` (soothing the client queue) while the backend safeguards database integrity against duplicate records.
+A rapid, asynchronous REST application layer powered by **FastAPI** and backed by **Supabase (PostgreSQL)**.
+* **Database-Level Idempotency Wall:** Leverages a strict relational unique-constraint index (`unique_scan_id`). Handheld terminals retrying identical data packets due to Wi-Fi drops trigger an automatic `APIError (23505)` bypass, returning a clean `200 OK` to clear client queues while preserving database integrity.
+* **Cloud Persistence Layer:** Replaced volatile volatile runtime state arrays with a fully persistent, relational PostgreSQL database layout, ensuring data availability across system restarts.
 * **Cross-Origin Security (CORS Engine):** Fully configured middleware array permitting asynchronous decoupled web clients to pipe data seamlessly across different network origins.
 
 ### 3. Offline-First Warehouse Terminal (`scanner_app.html`)
@@ -39,7 +40,8 @@ A zero-install Progressive Web App interface optimizing direct floor-to-cloud lo
 
 ## 🛠️ Technology Vector
 
-* **Backend Environment:** Python 3 (FastAPI, Uvicorn, Requests, Chardet)
+* **Backend Environment:** Python 3 (FastAPI, Uvicorn, Requests, Chardet, Supabase SDK)
+* **Cloud Database:** PostgreSQL (Supabase Ecosystem)
 * **Frontend Web Shell:** Modern Async/Await JavaScript, HTML5 Core, CSS3
 * **Data Transit Schema:** JSON API Payloads & Delimiter-Agnostic CSV Documents
 
@@ -60,7 +62,7 @@ This repository demonstrates complete stability under the following verified str
 ### 1. Provision Environment
 Install all required architectural dependencies via your terminal:
 ```bash
-pip install fastapi uvicorn requests chardet
+python -m pip install fastapi uvicorn requests chardet supabase
 ```
 
 ### 2. Execution Pipeline Order
