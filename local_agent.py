@@ -25,10 +25,10 @@ class LocalAgent:
         self.archive_folder = os.path.join(self.watch_folder, "archive")
         self.api_url = self.config.get("api_endpoint", "http://localhost:8000/api/v1/warehouse/scans")
         
-        # NEU: Konfiguration für den abendlichen Batch-Export (Standard: 18:00 Uhr)
+        # Konfiguration für den abendlichen Batch-Export (Standard: 18:00 Uhr)
         self.export_target_dir = os.path.abspath(os.path.join(base_dir, "./tms_outbound"))
         self.scheduled_export_time = self.config.get("export_time", "18:00")
-        self.last_export_date = "" # Verhindert, dass der Export innerhalb derselben Minute mehrfach triggert
+        self.last_export_date = "" 
 
         os.makedirs(self.watch_folder, exist_ok=True)
         os.makedirs(self.archive_folder, exist_ok=True)
@@ -41,7 +41,7 @@ class LocalAgent:
                 "api_endpoint": "http://localhost:8000/api/v1/warehouse/scans", 
                 "expected_columns": ["auftrag_id", "gewicht_kg", "status"],
                 "column_types": {"auftrag_id": "str", "gewicht_kg": "float", "status": "str"},
-                "export_time": "18:00" # NEU: Standardzeit im Config-File hinterlegt
+                "export_time": "18:00"
             }
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(default_config, f, indent=4)
@@ -124,7 +124,27 @@ class LocalAgent:
             except ValueError:
                 return "str"
 
+    def calculate_levenshtein(self, s1: str, s2: str) -> int:
+        """Berechnet die minimale Edit-Distanz zwischen zwei Spaltennamen."""
+        if len(s1) < len(s2):
+            return self.calculate_levenshtein(s2, s1)
+        if len(s2) == 0:
+            return len(s1)
+            
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+            
+        return previous_row[-1]
+
     def execute_self_healing(self, incoming_header: list, rows: list) -> bool:
+        """Heilt mutierte TMS-Spaltenstrukturen autonom via Levenshtein-Distanz."""
         expected_set = set(self.config["expected_columns"])
         incoming_set = set(incoming_header)
         
@@ -138,16 +158,21 @@ class LocalAgent:
             old_col = list(missing_columns)[0]
             new_col = list(new_columns)[0]
             
-            print(f"\n[WARNUNG] Spalte '{old_col}' fehlt. Neue Spalte '{new_col}' erkannt.")
+            distance = self.calculate_levenshtein(old_col, new_col)
+            
             sample_value = self.find_first_valid_value(rows, new_col)
             detected_type = self.determine_data_type(sample_value)
             expected_type = self.config["column_types"].get(old_col, "str")
             
-            if detected_type == expected_type or (expected_type == "float" and detected_type == "int"):
+            if distance <= 4 and (detected_type == expected_type or (expected_type == "float" and detected_type == "int")):
+                print(f"\n🤖 [SELF-HEALING] Mutation erkannt: '{old_col}' -> '{new_col}' (Distanz: {distance})")
+                
                 idx = self.config["expected_columns"].index(old_col)
                 self.config["expected_columns"][idx] = new_col
                 self.config["column_types"][new_col] = self.config["column_types"].pop(old_col)
+                
                 self.save_config()
+                print(f" 🟢 [HEALED] Schema erfolgreich restrukturiert. Pipeline läuft weiter.")
                 return True
                 
         return False
@@ -212,14 +237,10 @@ class LocalAgent:
         except Exception as e:
             print(f"[ERROR] {e}")
 
-    # ==========================================================================
-    # 📥 NEU: DIE OUTBOUND BATCH-EXPORT ENGINE
-    # ==========================================================================
     def download_daily_tms_export(self):
         """Holt die bereinigte CSV aus der Cloud und legt sie im TMS-Importordner ab."""
-        # Generiert die korrekte Export-URL aus der Scans-API-URL
         export_url = self.api_url.replace("/scans", "/export-tms")
-        
+
         try:
             print(f"\n[OUTBOUND] Getriggerter Datenabruf von der Cloud-API...")
             response = requests.get(export_url, timeout=10)
@@ -247,9 +268,6 @@ class LocalAgent:
         print(f"🌐 ZIEL-API-SERVER: {self.api_url}")
         print(f"=======================================================\n")
         
-        spinner = ['|', '/', '-', '\\']
-        spinner_idx = 0
-        
         try:
             while True:
                 # 1. Inbound-Prüfung: Scannt den Ordner aktiv für 5 Sekunden
@@ -257,14 +275,14 @@ class LocalAgent:
                     current_time_str = datetime.now().strftime("%H:%M")
                     current_date_str = datetime.now().strftime("%Y-%m-%d")
                     
-                    print(f"\r[{spinner[spinner_idx]}] Agent aktiv... Uhrzeit: {datetime.now().strftime('%H:%M:%S')} | Drücke STRG+C", end="", flush=True)
-                    spinner_idx = (spinner_idx + 1) % len(spinner)
+                    # Bereinigt: Cursor wird zurückgesetzt, zwei Leerzeichen überschreiben alte Spinner-Reste im Windows-Terminal
+                    print(f"\r🤖 Agent aktiv... Uhrzeit: {datetime.now().strftime('%H:%M:%S')} | Drücke STRG+C  ", end="", flush=True)
                     
-                    # ⏰ NEU: Der Scheduler-Zeitschalter (Prüft im Sekundentakt auf Übereinstimmung)
+                    # Der Scheduler-Zeitschalter
                     if current_time_str == self.scheduled_export_time and self.last_export_date != current_date_str:
                         print(f"\n\n⏰ [SCHEDULER] Export-Uhrzeit ({self.scheduled_export_time}) erreicht!")
                         self.download_daily_tms_export()
-                        self.last_export_date = current_date_str  # Verhindert Mehrfachaustragung in dieser Minute
+                        self.last_export_date = current_date_str
                         
                     time.sleep(0.5)
                 
@@ -280,3 +298,4 @@ class LocalAgent:
 if __name__ == "__main__":
     agent = LocalAgent()
     agent.run()
+
