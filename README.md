@@ -21,19 +21,22 @@ The system architecture is strictly split into decoupled, stateless layers engin
 A lightweight background worker monitoring local ERP export directories.
 * **File Stability Validation (Debounce Matrix):** Traps the classic *file-locking* issue. When an ERP takes seconds to write a massive CSV, the agent samples byte-size metrics over a 2-second delay. Processing is safely blocked until file-size volatility hits zero.
 * **Autonomous Self-Healing Parser:** Employs a deterministic 1:1 set-difference algorithm to catch schema mutations on the fly. If an admin renames a column at runtime, the engine heals its internal `config.json` without executing a fatal runtime crash.
-* **Fuzzy-Matching & Levenshtein Distance:** Leverages mathematical string-distance heuristics to autonomously map slightly mutated column headers (e.g., typos or minor export shifts) without halting execution.
-* **Automated Outbound Scheduler:** Features an integrated, timezone-aware background clock that automatically triggers at a user-defined time (e.g., 18:00) to fetch cleaned batch reports from the cloud and inject them back into the legacy ERP directory.
+* **Fuzzy-Matching & Levenshtein Distance:** Leverages mathematical string-distance heuristics to autonomously map slightly mutated column headers (e.g., typos or minor export shifts like `auftrags_id`) without halting execution.
+* **Automated Outbound Scheduler:** Features an integrated background clock that automatically triggers at a user-defined time (e.g., 18:00) to fetch cleaned batch reports from the cloud and inject them back into the legacy ERP directory.
+* **Clean Terminal Interface:** The legacy volatile ASCII spinner matrix has been stripped out in favor of a stable, flackerfreie real-time epoch clock render to keep host logging highly readable.
 
 ### 2. Idempotent SaaS Backend API (`cloud_backend.py`)
 A rapid, asynchronous REST application layer powered by **FastAPI** and backed by **Supabase (PostgreSQL)**.
 * **Database-Level Idempotency Wall:** Leverages a strict relational unique-constraint index (`unique_scan_id`). Handheld terminals retrying identical data packets due to Wi-Fi drops trigger an automatic `APIError (23505)` bypass, returning a clean `200 OK` to clear client queues while preserving database integrity.
-* **Cloud Persistence Layer:** Replaced volatile volatile runtime state arrays with a fully persistent, relational PostgreSQL database layout, ensuring data availability across system restarts.
+* **Cloud Persistence Layer:** Replaced volatile runtime state arrays with a fully persistent, relational PostgreSQL database layout, ensuring data availability across system restarts.
+* **Timezone-Aware Outbound Routing:** Implements strict, modern `UTC` datetime filters to compile and stream the last 24 hours of accumulated warehouse data into a consolidated CSV report for the outbound pipeline.
 * **Cross-Origin Security (CORS Engine):** Fully configured middleware array permitting asynchronous decoupled web clients to pipe data seamlessly across different network origins.
 
 ### 3. Offline-First Warehouse Terminal (`scanner_app.html`)
 A zero-install Progressive Web App interface optimizing direct floor-to-cloud logistics operations.
 * **Deterministic Composite Keys:** Eradicates distributed multi-device collision hazards by assembling a strict immutable cryptographic signature for every event: `DeviceID + Timestamp + UUID`.
-* **Asynchronous FIFO Queue-Sync:** Intercepts network disconnections instantly. Scanned records are securely backed up in client runtime memory, transitioning into a throttled queue that feeds the Cloud-API chronologically once stable telemetry returns.
+* **Crash-Resistant Puffer Matrix:** Hardened against unexpected operating system or browser crashes by forcing immediate atomic JSON stringification to client hardware storage layers (`localStorage`) before processing.
+* **Asynchronous FIFO Queue-Sync:** Intercepts network disconnections instantly. Scanned records are securely backed up in client runtime memory, transitioning into a throttled queue that feeds the Cloud-API chronologically (First-In-First-Out) once stable telemetry returns.
 * **ROI Telemetry Counter:** Measures precise process latency (milliseconds elapsed between structural barcode focus and API transaction completion) to supply clear financial efficiency insights for management reporting.
 
 ---
@@ -52,7 +55,7 @@ A zero-install Progressive Web App interface optimizing direct floor-to-cloud lo
 This repository demonstrates complete stability under the following verified stress scenarios:
 
 1. **Total Cloud Blackout:** Dropping the FastAPI process leaves local CSV data resting safely inside the agent watch folder with 0% asset dissipation. Processing catches up autonomously the second the cloud re-awakens.
-2. **Wi-Fi Blind Spot Buffering:** Simulating complete network severance flips the browser client into explicit offline execution mode, seamlessly queuing barcode payloads until the connection is hot.
+2. **Wi-Fi Blind Spot Buffering & Browser Crash Resilience:** Simulating complete network severance flips the browser client into explicit offline execution mode, seamlessly queuing barcode payloads. Even a sudden application force-quit preserves the queue locally until telemetry is restored.
 3. **Corrupt Zero-Byte Exports:** Bypasses empty structural artifacts generated by crashing legacy ERP systems without throwing unhandled internal faults.
 
 ---
