@@ -253,6 +253,384 @@
         if (queue.length === 0) return;
 
         isSyncing = true;
+        
+        // 🛡️ CHUNKED SYNC: Begrenze die Verarbeitung auf maximal 10 Scans pro Paket
+        const maxChunkSize = 10;
+        const chunk = queue.slice(0, maxChunkSize);
+        
+        logToUI("🔄 WLAN-Schutz aktiv: Synchronisiere Block von " + chunk.length + " Scan(s)...", "info");
+
+        for (let i = 0; i < chunk.length; i++) {
+            const currentScan = chunk[i];
+            
+            try {
+                const response = await fetch(API_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(currentScan)
+                });
+
+                if (response.status === 201 || response.status === 200) {
+                    await deleteScanFromIndexedDB(currentScan.unique_scan_id);
+                    logToUI("🚀 Sync-Erfolg: " + currentScan.barcode, "success");
+                } else {
+                    logToUI("⚠️ Sync verzögert. Statuscode: " + response.status, "warn");
+                    isSyncing = false;
+                    return;
+                }
+            } catch (error) {
+                isSyncing = false;
+                return;
+            }
+        }
+
+        // 🛡️ RANDOMISIERTES BACKOFF (JITTER): Baue künstlichen Zeitversatz ein
+        // Berechnet eine zufällige Sekundenzahl zwischen 1.000ms und 3.000ms
+        const randomJitter = Math.floor(Math.random() * 2000) + 1000;
+        logToUI("⏳ WLAN entlasten: Ersetze Dauerfeuer durch Pause von " + (randomJitter / 1000).toFixed(1) + "s...", "warn");
+        
+        setTimeout(function() {
+            isSyncing = false;
+            // Trigger den nächsten Durchlauf nach Ablauf der Jitter-Pause
+            updateQueueUI();
+        }, randomJitter);
+    }
+
+    async function sendScanToCloud(payload) {
+        // AbortController bricht das Warten nach 1.5 Sekunden ab
+        const controller = new AbortController();
+        const timeoutId = setTimeout(function() { controller.abort(); }, 1500);
+
+        try {
+            const response = await fetch(API_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+                signal: controller.signal
+            });
+
+            clearTimeout(timeoutId);
+
+            if (response.status === 201) {
+                logToUI("🟢 Live-Stream Erfolg: " + payload.barcode, "success");
+                return true;
+            } else if (response.status === 200) {
+                logToUI("🛑 Idempotenz: Duplikat übergangen (" + payload.barcode + ").", "success");
+                return true;
+            } else {
+                logToUI("❌ Server meldet Fehler: " + response.status, "error");
+                return false;
+            }
+        } catch (error) {
+            clearTimeout(timeoutId);
+            logToUI("❌ Verbindung unterbrochen. Wechsle SOFORT zu Offline-Puffer.", "error");
+            await handleOfflineFallback(payload);
+            return false;
+        }
+    }
+
+    async function processScan() {
+        const barcode = barcodeInput.value.trim();
+        if (!barcode) return;
+
+        const startTime = performance.now();
+        const timestamp = Date.now();
+        const rowUuid = generateUUID();
+        const deviceId = deviceIdInput.value;
+        const compositeKey = "SC-" + deviceId + "-" + timestamp + "-" + rowUuid;
+
+        const payload = {
+            unique_scan_id: compositeKey,
+            device_id: deviceId,
+            timestamp: timestamp,
+            uuid: rowUuid,
+            barcode: barcode,
+            scan_type: scanTypeSelect.value,
+            scan_duration_sec: parseFloat(((performance.now() - startTime) / 1000).toFixed(2))
+        };
+
+        const activeQueue = await getAllScans();
+        if (activeQueue.length > 0) {
+            await handleOfflineFallback(payload);
+            syncQueue();
+        } else {
+            await sendScanToCloud(payload);
+        }
+
+        barcodeInput.value = "";
+        barcodeInput.focus();
+    }
+
+    submitBtn.addEventListener("click", processScan);
+    barcodeInput.addEventListener("keypress", function(e) {
+        if (e.key === "Enter") processScan();
+    });
+
+    window.addEventListener("online", syncQueue);
+    window.addEventListener("load", async function() {
+        await initDatabase();
+        // 🛡️ BATCH-INTERVAL: Versucht alle 5 Sekunden, die Chunks gedrosselt abzuarbeiten
+        setInterval(syncQueue, 5000);
+    });
+</script>
+
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlowSync — Commercial Warehouse Terminal</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #121214;
+            color: #e1e1e6;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 400px;
+            background: #202024;
+            border-radius: 8px;
+            padding: 20px;
+            box-sizing: border-box;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        }
+        h2 { margin-top: 0; color: #04d361; text-align: center; }
+        .input-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; color: #a8a8b3; font-size: 14px; }
+        input, select {
+            width: 100%;
+            padding: 12px;
+            background: #121214;
+            border: 1px solid #29292e;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        input:focus, select:focus { border-color: #04d361; outline: none; }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: #04d361;
+            border: none;
+            border-radius: 4px;
+            color: #000;
+            font-weight: bold;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background: #00b34d; }
+        .queue-badge {
+            text-align: center;
+            margin: 10px 0;
+            font-size: 14px;
+            font-weight: bold;
+            color: #ff9000;
+            display: none;
+        }
+        .storage-status {
+            font-size: 11px;
+            color: #7c7c8a;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .log-panel {
+            margin-top: 20px;
+            background: #121214;
+            border-radius: 4px;
+            padding: 10px;
+            height: 150px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            border: 1px solid #29292e;
+        }
+        .log-entry { margin-bottom: 5px; padding-bottom: 5px; border-bottom: 1px solid #202024; }
+        .success { color: #04d361; }
+        .error { color: #f75a68; }
+        .info { color: #4da6ff; }
+        .warn { color: #ff9000; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>FlowSync Terminal</h2>
+    <div class="storage-status" id="storageStatus">💾 Initialisiere Speicher-Sicherheit...</div>
+    
+    <div class="input-group">
+        <label for="deviceId">Geräte-ID (Terminal)</label>
+        <input type="text" id="deviceId" value="SCANNER_RAMPE_A" readonly>
+    </div>
+
+    <div class="input-group">
+        <label for="scanType">Aktivität / Status</label>
+        <select id="scanType">
+            <option value="WARENEINGANG">WARENEINGANG (Erhalt)</option>
+            <option value="BELADUNG">BELADUNG (Lkw Verladung)</option>
+        </select>
+    </div>
+
+    <div class="input-group">
+        <label for="barcodeInput">Barcode scannen / eintippen</label>
+        <input type="text" id="barcodeInput" placeholder="Z.B. AUFTRAG-1001" autofocus>
+    </div>
+
+    <button id="submitBtn">Barcode erfassen</button>
+    <div class="queue-badge" id="queueBadge">⚠️ Offline-Modus: 0 Scans gepuffert</div>
+
+    <div class="log-panel" id="logPanel">
+        <div class="log-entry info">[SYSTEM] Terminal bereit. Native IndexedDB aktiv.</div>
+    </div>
+</div>
+
+<script>
+    const API_URL = "http://localhost:8000/api/v1/warehouse/scans";
+    const DB_NAME = "FlowSyncStorage";
+    const STORE_NAME = "offline_queue";
+    
+    const barcodeInput = document.getElementById("barcodeInput");
+    const scanTypeSelect = document.getElementById("scanType");
+    const deviceIdInput = document.getElementById("deviceId");
+    const submitBtn = document.getElementById("submitBtn");
+    const logPanel = document.getElementById("logPanel");
+    const queueBadge = document.getElementById("queueBadge");
+    const storageStatus = document.getElementById("storageStatus");
+
+    let dbInstance = null;
+    let isSyncing = false;
+
+    function logToUI(message, type = "info") {
+        const entry = document.createElement("div");
+        entry.className = `log-entry ${type}`;
+        const time = new Date().toLocaleTimeString();
+        entry.innerText = `[${time}] ${message}`;
+        logPanel.insertBefore(entry, logPanel.firstChild);
+    }
+
+    function generateUUID() {
+        return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c) {
+            const r = Math.random() * 16 | 0;
+            const v = c === "x" ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    }
+
+    function initDatabase() {
+        return new Promise(function(resolve, reject) {
+            const request = indexedDB.open(DB_NAME, 1);
+            
+            request.onupgradeneeded = function(event) {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains(STORE_NAME)) {
+                    db.createObjectStore(STORE_NAME, { keyPath: "unique_scan_id" });
+                }
+            };
+            
+            request.onsuccess = function(event) {
+                dbInstance = event.target.result;
+                checkStorageGuarantee();
+                resolve();
+            };
+            
+            request.onerror = function() {
+                logToUI("❌ IndexedDB konnte nicht initialisiert werden!", "error");
+                reject();
+            };
+        });
+    }
+
+    async function checkStorageGuarantee() {
+        if (navigator.storage && navigator.storage.persist) {
+            const isPersisted = await navigator.storage.persisted();
+            if (isPersisted) {
+                storageStatus.innerText = "🛡️ PERSISTENT STORAGE: Aktiv (OS-Löschschutz garantiert)";
+                storageStatus.style.color = "#04d361";
+            } else {
+                const requestPersist = await navigator.storage.persist();
+                if (requestPersist) {
+                    storageStatus.innerText = "🛡️ PERSISTENT STORAGE: Genehmigt (Gesichert)";
+                    storageStatus.style.color = "#04d361";
+                } else {
+                    storageStatus.innerText = "⚠️ BEST-EFFORT STORAGE: OS kann bei Speicherknappheit löschen";
+                    storageStatus.style.color = "#ff9000";
+                }
+            }
+        } else {
+            storageStatus.innerText = "💾 LOCAL STORAGE MODE (Legacy Browser)";
+        }
+        updateQueueUI();
+    }
+
+    function getAllScans() {
+        return new Promise(function(resolve) {
+            if (!dbInstance) return resolve([]);
+            const tx = dbInstance.transaction(STORE_NAME, "readonly");
+            const store = tx.objectStore(STORE_NAME);
+            const request = store.getAll();
+            request.onsuccess = function() { resolve(request.result); };
+        });
+    }
+
+    function saveScanToIndexedDB(payload) {
+        return new Promise(function(resolve) {
+            if (!dbInstance) return resolve();
+            const tx = dbInstance.transaction(STORE_NAME, "readwrite");
+            const store = tx.objectStore(STORE_NAME);
+            store.put(payload);
+            tx.oncomplete = function() {
+                updateQueueUI();
+                resolve();
+            };
+        });
+    }
+
+    function deleteScanFromIndexedDB(id) {
+        return new Promise(function(resolve) {
+            if (!dbInstance) return resolve();
+            const tx = dbInstance.transaction(STORE_NAME, "readwrite");
+            const store = tx.objectStore(STORE_NAME);
+            store.delete(id);
+            tx.oncomplete = function() {
+                updateQueueUI();
+                resolve();
+            };
+        });
+    }
+
+    async function updateQueueUI() {
+        const queue = await getAllScans();
+        if (queue.length > 0) {
+            queueBadge.style.display = "block";
+            queueBadge.innerText = "⚠️ Offline-Puffer aktiv: " + queue.length + " Scan(s) unlimitiert gesichert";
+        } else {
+            queueBadge.style.display = "none";
+        }
+    }
+
+    // ==============================================================================
+    // 🔄 CHRONOLOGISCHER SYNC & FLOW-LOGIK
+    // ==============================================================================
+    async function handleOfflineFallback(payload) {
+        await saveScanToIndexedDB(payload);
+        logToUI("📦 ASYNC INDEXEDDB: Lokal gesichert (" + payload.barcode + ").", "warn");
+    }
+
+    async function syncQueue() {
+        if (isSyncing) return;
+        const queue = await getAllScans();
+        if (queue.length === 0) return;
+
+        isSyncing = true;
         logToUI("🔄 Netzwerkverfügbarkeit erkannt. Synchronisiere " + queue.length + " Scans...", "info");
 
         while (queue.length > 0) {
