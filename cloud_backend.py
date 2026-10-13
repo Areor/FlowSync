@@ -1,22 +1,27 @@
-from fastapi import FastAPI, HTTPException, status, Response
+import os
+import uvicorn
+from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
 from supabase import create_client, Client
-from postgrest.exceptions import APIError
 from datetime import datetime, timedelta, UTC
-import uvicorn
+from fastapi.responses import PlainTextResponse
+from postgrest.exceptions import APIError
 
-app = FastAPI(title="Logistik SaaS Cloud API")
 
-# ==============================================================================
-# 🔑 SUPABASE CONFIGURATION
-# ==============================================================================
-# TODO: Kopieren Sie diese Werte aus Ihren Supabase-Projekteinstellungen (Settings -> API)
-SUPABASE_URL = "https://glkllutkmxroklwkbomw.supabase.co"
-SUPABASE_KEY = "sb_publishable_tlDUgJV9ZUcQh61xTqzrFQ_9p8BaCBc"
+from dotenv import load_dotenv
+load_dotenv()
 
-# Initialisierung des offiziellen Supabase-Clients
+app = FastAPI()
+
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Sicherheits-Check: Falls die .env fehlt, bricht das System kontrolliert ab
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("❌ Kritischer Fehler: SUPABASE_URL oder SUPABASE_KEY nicht in .env definiert!")
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==============================================================================
