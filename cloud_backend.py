@@ -1,133 +1,109 @@
-import os
 import uvicorn
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import FastAPI, HTTPException, Response, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from supabase import create_client, Client
+from pydantic import BaseModel, Field
 from datetime import datetime, timedelta, UTC
 from fastapi.responses import PlainTextResponse
-from postgrest.exceptions import APIError
+from typing import Optional
 
+# 🔐 Import des cloud-agnostischen Repository-Patterns
+from database import DatabaseRepository
 
-from dotenv import load_dotenv
-load_dotenv()
+app = FastAPI(
+    title="FlowSync Enterprise API",
+    description="Gehärteter REST-Sicherheitslayer für die logistische Middleware",
+    version="1.3.0"
+)
 
-app = FastAPI()
-
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-# Sicherheits-Check: Falls die .env fehlt, bricht das System kontrolliert ab
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("❌ Kritischer Fehler: SUPABASE_URL oder SUPABASE_KEY nicht in .env definiert!")
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Initialisierung des isolierten Datenbank-Layers
+db = DatabaseRepository()
 
 # ==============================================================================
-# 🔓 CORS-FREIGABE (Erlaubt dem Webbrowser den Zugriff aus dem Frontend)
+# 🔓 CORS-FREIGABE (Middleware-Array für entkoppelte Web-Clients)
 # ==============================================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Erlaubt absolut jedem Client den Zugriff
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],  
     allow_headers=["*"],  
 )
 
 # ==============================================================================
-# 📦 DATA MODELS (PYDANTIC)
+# 📦 GESTEUERTE INPUT-VALIDIERUNG (Pydantic-Absicherung gegen SQL-Injections)
 # ==============================================================================
 class ScanEvent(BaseModel):
-    unique_scan_id: str
-    device_id: str
+    unique_scan_id: str = Field(..., min_length=5, max_length=150)
+    device_id: str = Field(..., min_length=3, max_length=100)
     timestamp: int
     uuid: str
-    barcode: str
-    scan_duration_sec: float
-    scan_type: str = "BELADUNG"  # Standardwert, passend zu Ihrem DDL-Schema
+    barcode: str = Field(..., min_length=1, max_length=100)
+    scan_duration_sec: float = Field(..., ge=0.0)
+    scan_type: str = Field(..., max_length=50)
+    order_id: Optional[str] = None # Optionales Feld für die relationale Verknüpfung im ERD
 
 # ==============================================================================
-# 🌐 API ENDPOINTS
+# 🌐 API ENDPOINTS (Inbound-Validierung & Quarantäne-Routing)
 # ==============================================================================
-@app.post("/api/v1/warehouse/scans", status_code=status.HTTP_201_CREATED)
+@app.post("/api/v1/warehouse/scans")
 async def receive_scan(scan: ScanEvent, response: Response):
-    """Nimmt Scans live entgegen und nutzt Supabase/PostgreSQL zur Deduplizierung."""
-    print(f"\n[API RECV] Request von Gerät: {scan.device_id} | Typ: {scan.scan_type}")
-    print(f" 🆔 Scan-ID: {scan.unique_scan_id} | 📦 Barcode: {scan.barcode}")
+    print(f"\n[API RECV] Eingehender Validierungs-Check für Gerät: {scan.device_id}")
+    
+    # Konvertierung des validierten Modells in ein natives Python-Dictionary
+    payload_dict = scan.model_dump()
+    
+    # Inbound-Schutzwall: Grundsätzliche Heuristik-Prüfung auf verdächtige SQL-Muster im Barcode
+    blacklist = ["UNION", "SELECT", "DROP", "--", "OR 1=1"]
+    if any(pattern in scan.barcode.upper() for pattern in blacklist):
+        # Angriffsversuch wird sofort isoliert und in der Quarantäne-Infrastruktur eingefroren
+        db.push_to_quarantine(payload_dict, "CRITICAL_SECURITY_VIOLATION: Suspicious SQL Patterns detected.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Eingabedaten verletzen die Sicherheitsrichtlinien (Input-Sanitization)."
+        )
 
-    try:
-        # Vorbereitung der Datenstruktur für das relationale PostgreSQL-Insert
-        db_payload = {
-            "unique_scan_id": scan.unique_scan_id,
-            "device_id": scan.device_id,
-            "barcode": scan.barcode,
-            "scan_type": scan.scan_type,
-            "scan_duration_sec": scan.scan_duration_sec,
-            "client_timestamp": scan.timestamp
-        }
-
-        # Live-Insert in die Cloud-Datenbank (Tabelle: scan_events)
-        data = supabase.table("scan_events").insert(db_payload).execute()
+    # Weiterleitung der validierten Daten an das Cloud-Repository
+    success, db_status = db.insert_scan_event(payload_dict)
+    
+    if not success:
+        # Technische Fehler (z.B. Fremdschlüssel-Konflikte) wandern kontrolliert in die Quarantäne
+        db.push_to_quarantine(payload_dict, f"TRANSAKTIONS_FEHLER: {db_status}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="Transaktions-Fehler. Datensatz wurde zur Prüfung in Quarantäne isoliert."
+        )
         
-        print(f" 🟢 [SUCCESS] Scan dauerhaft in Supabase gespeichert.")
-        return {"status": "success", "message": "Scan successfully persisted in cloud database."}
-
-    except APIError as e:
-        # PostgreSQL fängt das Duplikat über den UNIQUE-Constraint ab (Error Code 23505 = Unique Violation)
-        if e.code == "23505" or "duplicate key" in str(e.message).lower():
-            print(f" 🛑 [IDEMPOTENZ-SCHUTZWALL] Duplikat blockiert: {scan.unique_scan_id}")
-            
-            # Wir ändern den HTTP-Statuscode auf 200 OK, damit die Client-App den Scan als "erledigt" löscht
-            response.status_code = status.HTTP_200_OK
-            return {"status": "success", "message": "Duplicate ignored safely. Data already preserved."}
+    if db_status == "200_DUPLICATE_IGNORED":
+        print(f" 🛑 [IDEMPOTENZ-SCHUTZWALL] Identisches Duplikat blockiert: {scan.unique_scan_id}")
+        response.status_code = status.HTTP_200_OK
+        return {"status": "success", "message": "Duplicate verified and bypassed safely."}
         
-        # Andere unerwartete Datenbankfehler fangen und ausgeben
-        print(f" ❌ [DATABASE ERROR] {e.message}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database error: {e.message}")
+    print(f" 🟢 [SUCCESS] Scan-Event validiert und permanent gespeichert.")
+    response.status_code = status.HTTP_201_CREATED
+    return {"status": "success", "message": "Scan successfully validated and persisted."}
 
 @app.get("/api/v1/warehouse/transactions")
 async def get_all_transactions():
-    """Holt die letzten 100 Scans live aus Supabase ab."""
-    try:
-        response = supabase.table("scan_events").select("*").order("created_at", desc=True).limit(100).execute()
-        return response.data
-    except APIError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database error: {e.message}")
-
-from fastapi.responses import PlainTextResponse
-from datetime import datetime, timedelta
+    return db.get_recent_scans(limit=100)
 
 @app.get("/api/v1/warehouse/export-tms", response_class=PlainTextResponse)
 async def export_tms_batch():
-    """Generiert am Tagesende den konsolidierten CSV-Batch-Export für das Altsystem."""
     try:
-        # Holt alle gesammelten Scans der letzten 24 Stunden aus Supabase
         one_day_ago = (datetime.now(UTC) - timedelta(days=1)).isoformat()
-        response = supabase.table("scan_events")\
-                           .select("barcode, scan_type, created_at")\
-                           .gte("created_at", one_day_ago)\
-                           .execute()
+        scans = db.fetch_scans_for_batch_export(one_day_ago)
         
-        scans = response.data
-        
-        # CSV-Header definieren
         csv_content = "auftrag_id;status;verarbeitet_am\n"
-        
-        # Datensätze in das vom Altsystem erwartete CSV-Format konvertieren
         for scan in scans:
             barcode = scan.get("barcode", "UNKNOWN")
             status_value = scan.get("scan_type", "GELADEN")
             timestamp = scan.get("created_at", "")
-            
             csv_content += f"{barcode};{status_value};{timestamp}\n"
             
-        print(f" 📑 [BATCH EXPORT] {len(scans)} Datensätze für den TMS-Export strukturiert.")
+        print(f" 📑 [BATCH EXPORT] {len(scans)} Datensätze strukturiert.")
         return csv_content
 
-    except APIError as e:
-        raise HTTPException(status_code=500, detail=f"Database export error: {e.message}")
-
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export layer crash: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
