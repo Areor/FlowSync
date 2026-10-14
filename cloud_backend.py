@@ -1,9 +1,10 @@
+import os
 import uvicorn
 from fastapi import FastAPI, HTTPException, Response, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta, UTC
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, HTMLResponse
 from typing import Optional
 
 # 🔐 Import des cloud-agnostischen Repository-Patterns
@@ -104,6 +105,45 @@ async def export_tms_batch():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export layer crash: {str(e)}")
+
+from fastapi.responses import HTMLResponse, PlainTextResponse # 🚀 Oben bei den Imports anpassen
+
+# ... Ihr bestehender Code bleibt völlig unverändert ...
+
+@app.get("/terminal", response_class=HTMLResponse)
+async def get_mobile_terminal():
+    """Liefert die Scanner-App als echte, sichere HTTPS-Webseite direkt aus."""
+    try:
+        with open("scanner_app.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="scanner_app.html nicht im Hauptordner gefunden!")
+
+@app.get("/hub", response_class=HTMLResponse)
+async def get_dispatch_hub():
+    """Liefert das sichere Disponenten-Dashboard (Hub) im Leitstand aus."""
+    try:
+        with open("hub_dashboard.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404, 
+            detail="hub_dashboard.html nicht im Hauptordner gefunden!"
+        )
+
+@app.get("/api/v1/hub/config")
+async def get_hub_config():
+    """Gibt die Supabase-Konfiguration sicher aus den lokalen Umgebungsvariablen an das Dashboard weiter."""
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY") # Hier wird der Public Anon Key ausgelesen
+    
+    if not supabase_url or not supabase_key:
+        raise HTTPException(status_code=500, detail="Supabase-Konfiguration in der .env-Datei unvollständig!")
+        
+    return {
+        "supabase_url": supabase_url,
+        "supabase_key": supabase_key
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
