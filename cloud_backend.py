@@ -1,10 +1,12 @@
-import os
+import os  # 🔐 SYSTEM-SCHUTZ: Import für das Auslesen der .env-Variablen
 import uvicorn
 from fastapi import FastAPI, HTTPException, Response, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta, UTC
-from fastapi.responses import PlainTextResponse, HTMLResponse
+# 🚀 NEU: FileResponse für die native, unverzerrte Binär-Auslieferung hinzugefügt
+from fastapi.responses import PlainTextResponse, HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from typing import Optional
 
 # 🔐 Import des cloud-agnostischen Repository-Patterns
@@ -16,7 +18,15 @@ app = FastAPI(
     version="1.3.0"
 )
 
-# Initialisierung des isolierten Datenbank-Layers
+from fastapi.staticfiles import StaticFiles
+
+# ==============================================================================
+# 🔐 OFFLINE-FIRST ASSET-MOUNTING: Zwingt Windows zum korrekten MIME-Type-Streaming
+# ==============================================================================
+# Mountet das gesamte Hauptverzeichnis als statischen Speicher. Dadurch wird die 
+# zxing.min.js mit garantiertem JavaScript-Sicherheits-Header ans Handy übertragen.
+app.mount("/static", StaticFiles(directory="."), name="static")
+
 db = DatabaseRepository()
 
 # ==============================================================================
@@ -48,36 +58,39 @@ class ScanEvent(BaseModel):
 # ==============================================================================
 @app.post("/api/v1/warehouse/scans")
 async def receive_scan(scan: ScanEvent, response: Response):
-    print(f"\n[API RECV] Eingehender Validierungs-Check für Gerät: {scan.device_id}")
-    
-    # Konvertierung des validierten Modells in ein natives Python-Dictionary
+    print(f"\n[API RECV] Validierungs-Check für Gerät: {scan.device_id}")
     payload_dict = scan.model_dump()
     
-    # Inbound-Schutzwall: Grundsätzliche Heuristik-Prüfung auf verdächtige SQL-Muster im Barcode
+    # Inbound-Schutzwall: Heuristik-Prüfung gegen SQL-Injections
     blacklist = ["UNION", "SELECT", "DROP", "--", "OR 1=1"]
     if any(pattern in scan.barcode.upper() for pattern in blacklist):
-        # Angriffsversuch wird sofort isoliert und in der Quarantäne-Infrastruktur eingefroren
-        db.push_to_quarantine(payload_dict, "CRITICAL_SECURITY_VIOLATION: Suspicious SQL Patterns detected.")
+        db.push_to_quarantine(payload_dict, "SECURITY_VIOLATION: SQL Patterns detected.")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Eingabedaten verletzen die Sicherheitsrichtlinien (Input-Sanitization)."
+            detail="Eingabedaten verletzen die Sicherheitsrichtlinien."
         )
 
-    # Weiterleitung der validierten Daten an das Cloud-Repository
-    success, db_status = db.insert_scan_event(payload_dict)
+    try:
+        # 🚀 OFFLINE-FALLBACK-PROTECTION: Fängt Netzwerk-Abstürze im Schul-WLAN ab
+        success, db_status = db.insert_scan_event(payload_dict)
+    except Exception as e:
+        print(f" ⚠️ [NETZWERK BLOCK] Cloud blockiert durch Firewall: {str(e)}")
+        # Wenn das Schul-WLAN blockiert, retten wir die Daten lokal in die Quarantäne
+        db.push_to_quarantine(payload_dict, f"OFFLINE_SCHUL_WLAN_BLOCK: {str(e)}")
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {"status": "offline_buffered", "message": "Scan lokal gesichert. Cloud-Verbindung blockiert."}
     
     if not success:
-        # Technische Fehler (z.B. Fremdschlüssel-Konflikte) wandern kontrolliert in die Quarantäne
         db.push_to_quarantine(payload_dict, f"TRANSAKTIONS_FEHLER: {db_status}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail="Transaktions-Fehler. Datensatz wurde zur Prüfung in Quarantäne isoliert."
-        )
+        raise HTTPException(status_code=500, detail="Transaktions-Fehler.")
         
     if db_status == "200_DUPLICATE_IGNORED":
-        print(f" 🛑 [IDEMPOTENZ-SCHUTZWALL] Identisches Duplikat blockiert: {scan.unique_scan_id}")
         response.status_code = status.HTTP_200_OK
-        return {"status": "success", "message": "Duplicate verified and bypassed safely."}
+        return {"status": "success", "message": "Duplicate bypassed safely."}
+        
+    print(f" 🟢 [SUCCESS] Scan-Event permanent in Cloud gespeichert.")
+    response.status_code = status.HTTP_201_CREATED
+    return {"status": "success", "message": "Scan persisted."}
         
     print(f" 🟢 [SUCCESS] Scan-Event validiert und permanent gespeichert.")
     response.status_code = status.HTTP_201_CREATED
@@ -85,7 +98,19 @@ async def receive_scan(scan: ScanEvent, response: Response):
 
 @app.get("/api/v1/warehouse/transactions")
 async def get_all_transactions():
-    return db.get_recent_scans(limit=100)
+    """Holt Scans aus der Cloud oder greift bei Firewall-Sperren auf ein lokales Backup zurück."""
+    try:
+        # Versucht regulär, die echten Live-Daten aus Supabase abzufragen
+        return db.get_recent_scans(limit=100)
+    except Exception as e:
+        print(f" ⚠️ [HUB TRANSACTIONS BLOCK] Cloud nicht erreichbar wegen Firewall: {str(e)}")
+        
+        # 🚀 FALLBACK: Holt stattdessen die lokal zwischengespeicherten Quarantäne-Scans
+        if hasattr(db, 'get_quarantine_scans'):
+            return db.get_quarantine_scans()
+            
+        # Absicherung: Gibt ein leeres Array zurück, damit das Hub sauber rendert und nicht abstürzt
+        return []
 
 @app.get("/api/v1/warehouse/export-tms", response_class=PlainTextResponse)
 async def export_tms_batch():
@@ -110,14 +135,30 @@ from fastapi.responses import HTMLResponse, PlainTextResponse # 🚀 Oben bei de
 
 # ... Ihr bestehender Code bleibt völlig unverändert ...
 
+# ==============================================================================
+# 🌐 STANDARD APPLICATON ROUTING: Frontend-Auslieferung
+# ==============================================================================
 @app.get("/terminal", response_class=HTMLResponse)
 async def get_mobile_terminal():
-    """Liefert die Scanner-App als echte, sichere HTTPS-Webseite direkt aus."""
+    """Liefert die Scanner-App als schlanke, blitzschnelle HTML-Seite aus."""
     try:
         with open("scanner_app.html", "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read(), status_code=200)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404, 
+            detail="scanner_app.html nicht im Hauptordner gefunden!"
+        )
+
+@app.get("/hub", response_class=HTMLResponse)
+async def get_dispatch_hub():
+    """Liefert das sichere Disponenten-Dashboard (Hub) im Leitstand aus."""
+    try:
+        with open("hub_dashboard.html", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="scanner_app.html nicht im Hauptordner gefunden!")
+        raise HTTPException(status_code=404, detail="hub_dashboard.html nicht gefunden!")
+
 
 @app.get("/hub", response_class=HTMLResponse)
 async def get_dispatch_hub():
