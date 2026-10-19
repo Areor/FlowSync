@@ -1,45 +1,46 @@
-# FlowSync: Resiliente Event-Driven B2B-Logistik-Middleware
+# FlowSync: Resilient Event-Driven B2B Logistics Middleware
 
-FlowSync ist ein hochverfügbares, offline-fähiges Ökosystem zur Echtzeit-Erfassung und Synchronisation von Warenbewegungen an Logistik-Rampen. Das System verbindet ein mobiles AR-Scannertool direkt mit einem reaktiven Leitstand-Dashboard (Dispatch Hub) über ein abgesichertes FastAPI-Gateway.
+FlowSync is a highly available, offline-ready ecosystem designed for real-time tracking and synchronization of goods movements at logistics ramps. The system connects a mobile AR scanner tool directly to a reactive dispatch dashboard (Dispatch Hub) via a secured FastAPI gateway.
 
-## 🛰️ Architektur- & Resilienz-Highlights
+## 🛰️ Architecture & Resilience Highlights
 
-Das System wurde gezielt darauf ausgelegt, Netzwerkausfälle an Funkgrenzen (z. B. in Lagerhallen) und restriktive Client-Isolationen autonom abzufedern:
+The system was specifically engineered to autonomously mitigate network dropouts at coverage edges (e.g., inside large warehouses) and bypass restrictive client isolation policies:
 
-*   **Native Hardware-Zündung:** Verzicht auf schwere JS-Bibliotheken im Frontend; direkte Nutzung der Google **`BarcodeDetector` API** auf Chiptakt-Ebene für verzögerungsfreie Scans (<50ms).
-*   **Offline-First-Queue:** Integration einer transaktionsgesicherten **IndexedDB-Warteschlange (FIFO)** im mobilen Client zur nahtlosen lokalen Pufferung bei Wi-Fi-Blackouts.
-*   **Inbound-Schutzwall & Quarantäne:** Integrierte Heuristik-Prüfung im FastAPI-Gateway gegen Injections sowie automatische Umleitung blockierter oder unvollständiger Payloads in eine flüchtige InMemory-Quarantäne.
-*   **MIME-Type & Tunnel-Härtung:** Architektur-Strukturierung zur Umgehung von Google Chrome *Strict MIME-Type Checking* (Nosniff) und asynchronen CORS-Sperren in restriktiven Netzwerken.
+*   **Native Hardware Triggering:** Zero dependency on heavy frontend JavaScript libraries; utilizes the native Google **`BarcodeDetector` API** directly at the browser-RAM layer for ultra-low latency scanning (<50ms).
+*   **Offline-First Queue:** Integration of a transaction-secured **IndexedDB queue (FIFO)** within the mobile client ensures seamless local buffering during Wi-Fi blackouts.
+*   **Inbound Shieldwall & Quarantine:** Built-in heuristic filtering within the FastAPI gateway screens for injection patterns, automatically routing malformed or blocked payloads into an in-memory quarantine buffer.
+*   **MIME-Type & Tunnel Hardening:** Architectural design structured to circumvent Google Chrome *Strict MIME-Type Checking* (Nosniff) and asynchronous CORS blocks within highly restrictive enterprise networks.
 
-## 🛠️ Tech-Stack
+## 🛠️ Tech Stack
 
 *   **Backend:** Python 3.14, FastAPI (ASGI), Uvicorn, HTTPX/Httpcore
-*   **Frontend:** Vanilla JS (ES6+), HTML5 Canvas (AR-Bounding-Box), CSS3 Grid/Flexbox
+*   **Frontend:** Vanilla JS (ES6+), HTML5 Canvas (AR Bounding Box), CSS3 Grid/Flexbox
 *   **Cloud & Storage:** Supabase (PostgreSQL), IndexedDB (Client-RAM)
-## 🔄 Ende-zu-Ende Datenfluss (B2B-Infrastruktur)
+
+## 🔄 End-to-End Data Flow (B2B Infrastructure)
 
 ```text
 [ Motorola Terminal ] --( Native BarcodeDetector API )
          |
-         | (Bei Netzverlust: IndexedDB FIFO-Queue / Lokaler Puffer)
+         | (Network Drop: IndexedDB FIFO-Queue / Local Buffer)
          v
-[ ngrok-Tunnel / WAN ] 
+[ ngrok Tunnel / WAN ] 
          |
-         | (REST-POST / JSON-Payload)
+         | (REST-POST / JSON Payload)
          v
-[ FastAPI API-Gateway ] --( Heuristik- & SQL-Injection-Schutzwall )
+[ FastAPI API Gateway ] --( Heuristic & SQL Injection Shieldwall )
          |
-         +---> [ Erfolgreich ] ---> ( Supabase Cloud DB ) ---> [ Dispatch Hub / PC-Monitor ]
+         +---> [ Success ] ---> ( Supabase Cloud DB ) ---> [ Dispatch Hub / Monitor ]
          |
-         +---> [ Netzwerk-Sperre ] -> ( InMemory-Quarantäne ) -> [ Fehlerfreier Fallback 202 ]
+         +---> [ Net Block ] -> ( In-Memory Quarantine ) -> [ Fail-Safe 202 Fallback ]
 ```
 
-## 🔌 API-Spezifikation (REST-Endpunkte)
+## 🔌 API Specification (REST Endpoints)
 
 ### `POST /api/v1/warehouse/scans`
-Nimmt mobile Scans entgegen, validiert die JSON-Struktur und speichert sie transaktionssicher ab.
+Ingests mobile scans, validates the incoming JSON structure, and persists records safely.
 
-*   **Payload (Anfrage-Format):**
+*   **Payload (Request Format):**
     ```json
     {
       "unique_scan_id": "MOBILE_1718251000_ABC123",
@@ -51,45 +52,46 @@ Nimmt mobile Scans entgegen, validiert die JSON-Struktur und speichert sie trans
       "scan_type": "WARENEINGANG"
     }
     ```
-*   **Response-Codes:**
-    *   `201 Created`: Scan erfolgreich verarbeitet und in der Cloud gespeichert.
-    *   `202 Accepted`: Netzwerkblockade zur Cloud abgefangen; lokal in Quarantäne gesichert.
-    *   `422 Unprocessable Entity`: Sicherheitsverletzung oder fehlerhafte Payload isoliert.
+*   **Response Codes:**
+    *   `201 Created`: Scan successfully processed and persisted to the cloud database.
+    *   `202 Accepted`: Cloud connection blocked by firewall; payload safely quarantined locally.
+    *   `422 Unprocessable Entity`: Security violation triggered or malformed payload isolated.
 
 ### `GET /api/v1/warehouse/transactions`
-Liefert die letzten 100 verifizierten Transaktionen für das Disponenten-Dashboard aus.
-## 🚀 Installation & Lokal ausführen
+Fetches the last 100 verified transaction records to populate the dispatcher dashboard.
 
-### 1. Repository klonen & Verzeichnis wechseln
+## 🚀 Installation & Local Setup
+
+### 1. Clone the Repository & Navigate
 ```bash
-git clone https://github.com[Dein-GitHub-Benutzername]/FlowSync.git
+git clone https://github.com/Areor/FlowSync.git
 cd FlowSync
 ```
 
-### 2. Abhängigkeiten installieren
+### 2. Install Dependencies
 ```bash
 pip install fastapi uvicorn supabase python-dotenv httpx pydantic
 ```
 
-### 3. Umgebungsvariablen einrichten
-Erstelle eine `.env`-Datei im Hauptverzeichnis und trage deine Supabase-Zugangsdaten ein:
+### 3. Configure Environment Variables
+Create a `.env` file in the root directory and add your Supabase credentials:
 ```env
 SUPABASE_URL="https://supabase.co"
-SUPABASE_KEY="dein-geheimer-supabase-api-schlüssel"
+SUPABASE_KEY="your-secret-supabase-api-key"
 ```
 
-### 4. Backend-Server starten
+### 4. Run the Backend Server
 ```bash
 python cloud_backend.py
 ```
-Das System läuft nun lokal unter `http://localhost:8000`.
+The system will be accessible locally at `http://localhost:8000`.
 
-### 5. Mobiles Terminal freischalten
-Um die App auf dem Smartphone zu testen, tunnel den Port `8000` via ngrok:
+### 5. Expose the Mobile Terminal
+To test the web app on your physical mobile device, tunnel port `8000` via ngrok:
 ```bash
 ngrok http 8000
 ```
-Rufe anschließend die generierte `https://.../terminal`-Adresse im mobilen Chrome-Browser auf.
+Then open the generated `https://.../terminal` URL inside your mobile Chrome browser.
 
-## 📝 Lizenz & Urheberrecht
-Projekt entwickelt im Rahmen des fortgeschrittenen Software-Engineering-Portfolios von Oliver [Dein Nachname], 2026. Frei verwendbar zu Demonstrations- und Bildungszwecken.
+## 📝 License & Copyright
+Project developed as part of an advanced Software Engineering portfolio by Oliver Preuss, 2026. Open for demonstration and educational purposes.
