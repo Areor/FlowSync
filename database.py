@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from postgrest.exceptions import APIError
+from datetime import datetime, UTC
 
 # Lädt die Umgebungsvariablen aus der lokalen .env-Datei
 load_dotenv()
@@ -10,7 +11,9 @@ class DatabaseRepository:
     def __init__(self):
         self.url = os.getenv("SUPABASE_URL")
         self.key = os.getenv("SUPABASE_KEY")
-        
+        # NEU: Der Quarantäne-Speicher für kompromittierte oder Offline-Scans
+        self._quarantine_storage = []
+        print("💾 [DATABASE] Lokale Sicherheits-Quarantäne erfolgreich im RAM verankert.")
         if not self.url or not self.key:
             raise RuntimeError("❌ [DATABASE] Kritischer Fehler: SUPABASE_URL oder SUPABASE_KEY fehlt in .env!")
         
@@ -82,3 +85,24 @@ class DatabaseRepository:
         except APIError as e:
             print(f" ❌ [QUARANTÄNE ERROR] Konnte Quarantäne-Eintrag nicht schreiben: {e.message}")
             return False
+    # 🔐 ISOLATION WORKER: Verschiebt fehlerhafte Scans in den RAM-Sicherheitsbereich
+    def push_to_quarantine(self, payload: dict, reason: str) -> None:
+        """Isoliert einen Datensatz und fügt ihm einen dokumentierten Fehlergrund hinzu."""
+        quarantine_entry = payload.copy()
+        quarantine_entry["quarantine_reason"] = reason
+        
+        # 🟢 REPARIERT: Nutzt die oben importierten Klassen für einen fehlerfreien ISO-Zeitstempel
+        quarantine_entry["quarantined_at"] = datetime.now(UTC).isoformat()
+        
+        self._quarantine_storage.append(quarantine_entry)
+        print(f" 🚨 [QUARANTÄNE] Datensatz isoliert! Grund: {reason}")
+
+    # 🛰️ HUB RECOVERY ROUTE: Ermöglicht dem Leitstand das Auslesen der Quarantäne-Daten
+    def get_quarantine_scans(self) -> list:
+        """Liefert alle aktuell im RAM geparkten Quarantäne-Einträge chronologisch zurück."""
+        # Gibt eine Kopie der Liste zurück, sortiert nach dem neuesten Zeitstempel
+        return sorted(
+            self._quarantine_storage, 
+            key=lambda x: x.get("timestamp", 0), 
+            reverse=True
+        )
