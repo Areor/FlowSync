@@ -78,6 +78,17 @@
     </style>
 </head>
 <body>
+    <div class="container">
+        <h1>FlowSync Dispatch Hub</h1>
+        <h3 id="syncStatus">⚡ REALTIME SYNC: Initialisiere...</h3>
+        
+        <!-- 🚀 MANUAL BREAKTHROUGH: Zwingt den Browser zum Live-Abruf der Motorola-Scans -->
+        <button onclick="loadInitialTransactions()" style="margin-bottom: 20px; padding: 10px 20px; background: #00875f; color: white; border: none; border-radius: 4px; font-weight: bold; cursor: pointer;">
+            🔄 Daten jetzt live abrufen
+        </button>
+
+        <h2>Live Warenumschlag (Letzte 10 Scans)</h2>
+        <table>
 
 <div class="header-bar">
     <h1>FlowSync Dispatch Hub</h1>
@@ -187,6 +198,74 @@
 
     // Beim Laden der Seite wird nun zuerst die Konfiguration sicher injiziert
     window.addEventListener("load", fetchSecureConfig);
+    // ==============================================================================
+    // 🚀 ENTERPRISE COUPLING: Holt die Daten aus der Cloud und zeichnet die Zeilen
+    // ==============================================================================
+    async function loadInitialTransactions() {
+        try {
+            const response = await fetch(window.location.origin + "/api/v1/warehouse/transactions");
+            if (!response.ok) throw new Error("API-Verbindung gestört");
+            
+            const rawData = await response.json();
+            const tableBody = document.getElementById("transactionTableBody") || document.querySelector("table tbody");
+            if (!tableBody) return;
+            
+            // 🚀 DATA-DETECTOR: Erkennt, ob die Daten flach als Array oder verschachtelt ankommen
+            const transactions = Array.isArray(rawData) ? rawData : (rawData.data || []);
+            
+            tableBody.innerHTML = ""; // Bereinigt die UI für den frischen Einschlag
+            
+            if (transactions.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:#8d8d99;">📭 Keine Scans im Puffer (Cloud-Warteschleife leer)</td></tr>`;
+                return;
+            }
+
+            // Zeichnet die Zeilen so, dass der frischeste Motorola-Scan oben steht
+            transactions.forEach(function(scan) {
+                renderScanRow(scan);
+            });
+            
+            const statusEl = document.getElementById("syncStatus");
+            if (statusEl) statusEl.innerText = `⚡ REALTIME SYNC: ${transactions.length} Scans aktiv geladen`;
+        } catch (err) {
+            console.error("Hub-Sync-Fehler:", err);
+        }
+    }
+
+    function renderScanRow(scan) {
+        let tableBody = document.getElementById("transactionTableBody") || document.querySelector("table tbody");
+        if (!tableBody) return;
+
+        // 🚀 PROP-DETECTOR: Fängt elastisch alle Varianten von Spaltennamen ab
+        const rawTimestamp = scan.timestamp || scan.Timestamp || Date.now();
+        const device = scan.device_id || scan.deviceId || "UNBEKANNT";
+        const type = scan.scan_type || scan.scanType || "WARENEINGANG";
+        const code = scan.barcode || scan.Barcode || "LEER";
+
+        const scanTime = new Date(rawTimestamp).toLocaleTimeString();
+        const row = document.createElement("tr");
+
+        // Dynamische CSS-Farbakzente für verschiedene Terminals
+        const isMotorola = device.includes("MOTOROLA") ? "border-left: 4px solid #04d361;" : "";
+
+        row.innerHTML = `
+            <td style="${isMotorola}">${scanTime}</td>
+            <td><strong>${device}</strong></td>
+            <td><span class="badge" style="background: #29292e; color: #e1e1e6; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;">${type}</span></td>
+            <td><code style="color: #04d361; font-size: 14px; font-family: monospace;">${code}</code></td>
+        `;
+
+        // Sortiert chronologisch: Der neueste Live-Scan rutscht sofort ganz nach oben
+        tableBody.insertBefore(row, tableBody.firstChild);
+    }
+    // 🔌 START-ZÜNDER: Klinkt sich in den Ladevorgang des Webbrowsers ein
+    window.addEventListener("DOMContentLoaded", function() {
+        // Startet sofort die Altdaten-Abfrage aus der FastAPI
+        loadInitialTransactions();
+        
+        // Optionale automatische Live-Aktualisierung alle 5 Sekunden (Polling-Sicherheit)
+        setInterval(loadInitialTransactions, 5000);
+    });
 </script>
 
 </body>
