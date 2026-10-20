@@ -93,5 +93,14 @@ ngrok http 8000
 ```
 Then open the generated `https://.../terminal` URL inside your mobile Chrome browser.
 
+## 🤖 Development Methodology & AI Collaboration
+
+This project was built using modern **AI-Pair-Programming methodologies**. 
+*   **Architectural Design & Engineering:** Oliver Preuss (Core logic, debugging, network-hardening strategies, asymmetric hysteresis design, and local runtime verification).
+*   **Code Generation Assistance:** Advanced AI synthesis models (leveraged to accelerate boilerplate delivery and optimize code sanitization pipelines).
+
+*Demonstrating high-efficiency software orchestration and rapid prototyping in restricted network environments.*
+
+
 ## 📝 License & Copyright
 Project developed as part of an advanced Software Engineering portfolio by Oliver Preuss, 2026. Open for demonstration and educational purposes.
